@@ -1,5 +1,5 @@
 # Set this to the path to Caffe installation on your system
-caffe_root = "/path/to/your/caffe/python" 
+caffe_root = "/home/bowen/Downloads/caffe-master/python" 
 gpu = True
 
 # -------------------------------------
