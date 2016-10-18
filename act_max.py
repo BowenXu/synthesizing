@@ -30,6 +30,14 @@ conv_layers = ["conv1", "conv2", "conv3", "conv4", "conv5"]
 if settings.gpu:
   caffe.set_mode_gpu() # uncomment this if gpu processing is available
 
+#TODO
+prev_posterior = None
+curr_posterior = None
+curr_g = None
+prev_g = None
+curr_code = None
+prev_code = None
+code_hist = []
 
 def get_code(path, layer):
   '''
@@ -98,6 +106,13 @@ def make_step_generator(net, x, x0, start, end, step_size=1):
   # Make an update
   src.data[:] += step_size/np.abs(g).mean() * g
 
+  # TODO
+  global curr_g
+  global prev_g
+  curr_g = g
+  if prev_g == None:
+      prev_g = curr_g
+
   return grad_norm, src.data[:].copy()
 
 
@@ -117,7 +132,8 @@ def make_step_net(net, end, unit, image, xy=0, step_size=1):
   if end in fc_layers:
     one_hot.flat[unit] = 1.
   elif end in conv_layers:
-    one_hot[:, unit, xy, xy] = 1.
+    one_hot[:, unit, xy % one_hot.shape[2], int(xy/one_hot.shape[2])] = 1.
+    #one_hot[:, unit, xy, xy] = 1. TODO
   else:
     raise Exception("Invalid layer type!")
   
@@ -146,11 +162,19 @@ def make_step_net(net, end, unit, image, xy=0, step_size=1):
     obj_act = fc[unit]
     
   elif end in conv_layers:
-    fc = acts[end][0, :, xy, xy]
+    fc = acts[end][0, :, xy % acts[end].shape[2] , int(xy/acts[end].shape[2])]
+    #fc = acts[end][0, :, xy, xy] TODO
     best_unit = fc.argmax()
     obj_act = fc[unit]
 
   print "max: %4s [%.2f]\t obj: %4s [%.2f]\t norm: [%.2f]" % (best_unit, fc[best_unit], unit, obj_act, grad_norm)
+
+  # TODO store posterior value
+  global curr_posterior
+  global prev_posterior
+  curr_posterior = fc[best_unit] / 100.0
+  if prev_posterior == None:
+      prev_posterior = curr_posterior
 
   # Make an update
   src.data[:] += step_size/np.abs(g).mean() * g
@@ -174,6 +198,27 @@ def save_image(img, name):
   img = img[:,::-1, :, :] # Convert from BGR to RGB
   normalized_img = patchShow.patchShow_single(img, in_range=(-120,120))        
   scipy.misc.imsave(name, normalized_img)
+
+
+# p(y|x) TODO
+def calc_transition_prob(y, x, x_g, step_size):
+  return np.exp(-1.0 * np.linalg.norm(y - x -step_size * x_g) / (4 * step_size))
+
+
+def calc_acceptance(step_size):
+    q_curr_given_prev = calc_transition_prob(curr_code, prev_code, prev_g, step_size)
+    q_prev_given_curr = calc_transition_prob(prev_code, curr_code, curr_g, step_size)
+    return min(1.0, (curr_posterior * q_prev_given_curr) / (prev_posterior * q_curr_given_prev))
+
+
+def update_tracking(step_size):
+   if(np.random.uniform(0,1) <= calc_acceptance(step_size)):
+        global prev_code
+        global prev_g
+        global prev_posterior
+        prev_code = curr_code
+        prev_g = curr_g
+        prev_posterior = curr_posterior
 
 
 def activation_maximization(net, generator, gen_in_layer, gen_out_layer, start_code, params, 
@@ -215,6 +260,11 @@ def activation_maximization(net, generator, gen_in_layer, gen_out_layer, start_c
     layer = o['layer']
 
     for i in xrange(o['iter_n']):
+      # TODO store previous code
+      global code_hist
+      global prev_code
+      code_hist.append(src.data[:])
+      prev_code = src.data[:]
 
       step_size = o['start_step_size'] + ((o['end_step_size'] - o['start_step_size']) * i) / o['iter_n']
       
@@ -246,7 +296,6 @@ def activation_maximization(net, generator, gen_in_layer, gen_out_layer, start_c
       # Clipping code
       if clip:
         updated_code = np.clip(updated_code, a_min=-1, a_max=1) # VAE prior is within N(0,1)
-
       # Clipping each neuron independently
       elif upper_bound is not None:
         updated_code = np.maximum(updated_code, lower_bound) 
@@ -256,8 +305,14 @@ def activation_maximization(net, generator, gen_in_layer, gen_out_layer, start_c
       if o['L2'] > 0 and o['L2'] < 1:
         updated_code[:] *= o['L2']
 
+      # TODO store current code
+      global curr_code
+      curr_code = updated_code + np.sqrt(2 * step_size) * np.random.normal(0, 1, updated_code.shape)
+      update_tracking(step_size)
+      # updated_code += np.sqrt(2 * step_size) * np.random.normal(0, 1, updated_code.shape)
+
       # Update code
-      src.data[:] = updated_code
+      src.data[:] = prev_code # updated_code
 
       # Print x every 10 iterations
       if debug:
