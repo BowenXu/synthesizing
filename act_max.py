@@ -21,6 +21,7 @@ from numpy.testing import assert_array_equal
 import scipy.misc, scipy.io
 import patchShow
 import argparse # parsing arguments
+import scipy.stats as st
 
 mean = np.float32([104.0, 117.0, 123.0])
 
@@ -110,7 +111,7 @@ def make_step_generator(net, x, x0, start, end, step_size=1):
   global curr_g
   global prev_g
   curr_g = g
-  if prev_g == None:
+  if prev_g is None:
       prev_g = curr_g
 
   return grad_norm, src.data[:].copy()
@@ -132,8 +133,8 @@ def make_step_net(net, end, unit, image, xy=0, step_size=1):
   if end in fc_layers:
     one_hot.flat[unit] = 1.
   elif end in conv_layers:
-    one_hot[:, unit, xy % one_hot.shape[2], int(xy/one_hot.shape[2])] = 1.
-    #one_hot[:, unit, xy, xy] = 1. TODO
+    #one_hot[:, unit, xy % one_hot.shape[2], int(xy/one_hot.shape[2])] = 1. 
+    one_hot[:, unit, xy, xy] = 1.
   else:
     raise Exception("Invalid layer type!")
   
@@ -162,8 +163,8 @@ def make_step_net(net, end, unit, image, xy=0, step_size=1):
     obj_act = fc[unit]
     
   elif end in conv_layers:
-    fc = acts[end][0, :, xy % acts[end].shape[2] , int(xy/acts[end].shape[2])]
-    #fc = acts[end][0, :, xy, xy] TODO
+    #fc = acts[end][0, :, xy % acts[end].shape[2] , int(xy/acts[end].shape[2])]
+    fc = acts[end][0, :, xy, xy]
     best_unit = fc.argmax()
     obj_act = fc[unit]
 
@@ -172,12 +173,12 @@ def make_step_net(net, end, unit, image, xy=0, step_size=1):
   # TODO store posterior value
   global curr_posterior
   global prev_posterior
-  curr_posterior = fc[best_unit] / 100.0
-  if prev_posterior == None:
+  curr_posterior = fc[best_unit]
+  if prev_posterior is None:
       prev_posterior = curr_posterior
 
   # Make an update
-  src.data[:] += step_size/np.abs(g).mean() * g
+  src.data[:] += step_size/np.abs(g).mean() * g 
 
   return (grad_norm, src.data[:].copy(), obj_act)
 
@@ -201,18 +202,23 @@ def save_image(img, name):
 
 
 # p(y|x) TODO
-def calc_transition_prob(y, x, x_g, step_size):
-  return np.exp(-1.0 * np.linalg.norm(y - x -step_size * x_g) / (4 * step_size))
-
+def calc_transition_prob(val, mean, cov):
+    return norm(st.norm.pdf(val, mean, cov))
 
 def calc_acceptance(step_size):
-    q_curr_given_prev = calc_transition_prob(curr_code, prev_code, prev_g, step_size)
-    q_prev_given_curr = calc_transition_prob(prev_code, curr_code, curr_g, step_size)
+    q_curr_given_prev = calc_transition_prob(curr_code, prev_code + prev_g * step_size, step_size)
+    q_prev_given_curr = calc_transition_prob(prev_code, curr_code + curr_g * step_size, step_size)
+    #print "q_curr_given_prev : " + str(q_curr_given_prev)
+    #print "q_prev_given_curr : " + str(q_prev_given_curr)
+    if q_prev_given_curr == 0.0 or q_curr_given_prev == 0.0:
+        return 0.0
     return min(1.0, (curr_posterior * q_prev_given_curr) / (prev_posterior * q_curr_given_prev))
 
 
 def update_tracking(step_size):
-   if(np.random.uniform(0,1) <= calc_acceptance(step_size)):
+   acceptance = calc_acceptance(step_size)
+   #print "ACCEPTANCE : " + str(acceptance)
+   if(np.random.uniform(0,1) <= acceptance):
         global prev_code
         global prev_g
         global prev_posterior
@@ -263,8 +269,9 @@ def activation_maximization(net, generator, gen_in_layer, gen_out_layer, start_c
       # TODO store previous code
       global code_hist
       global prev_code
-      code_hist.append(src.data[:])
-      prev_code = src.data[:]
+      if prev_code is None:
+          prev_code = src.data[:]
+      code_hist.append(prev_code)
 
       step_size = o['start_step_size'] + ((o['end_step_size'] - o['start_step_size']) * i) / o['iter_n']
       
@@ -467,7 +474,12 @@ def main():
 
   if args.debug:
     save_image(output_image, "./debug/%s.jpg" % str(args.n_iters).zfill(3))
-  
+
+  count = 0
+  for i in xrange(len(code_hist) -1):
+      if not np.array_equal(code_hist[i], code_hist[i+1]):
+          count +=1
+  print "# Unique codes : " + str(count) + " %percentage : " + str(count * 1.0 / len(code_hist))
 
 if __name__ == '__main__':
   main()
