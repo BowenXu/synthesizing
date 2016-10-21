@@ -70,7 +70,6 @@ def get_code(path, layer):
   # initialize the encoder
   encoder = caffe.Net(settings.encoder_definition, settings.encoder_weights, caffe.TEST)
 
-  # run encoder and extract the features
   encoder.forward(data=data)
   feat = np.copy(encoder.blobs[layer].data)
   del encoder
@@ -121,11 +120,10 @@ def make_step_net(net, end, unit, image, xy=0, step_size=1):
   '''
   Forward and backward passes through the DNN being visualized.
   '''
-
   src = net.blobs['data'] # input image
   dst = net.blobs[end]
 
-  acts = net.forward(data=image, end=end)
+  acts = net.forward(data=image)#, end=end)
 
   one_hot = np.zeros_like(dst.data)
   
@@ -158,7 +156,7 @@ def make_step_net(net, end, unit, image, xy=0, step_size=1):
 
   # Check the activations
   if end in fc_layers:
-    fc = acts[end][0]
+    fc = acts['prob'][0]
     best_unit = fc.argmax()
     obj_act = fc[unit]
     
@@ -173,7 +171,7 @@ def make_step_net(net, end, unit, image, xy=0, step_size=1):
   # TODO store posterior value
   global curr_posterior
   global prev_posterior
-  curr_posterior = fc[best_unit]
+  curr_posterior = fc[unit]
   if prev_posterior is None:
       prev_posterior = curr_posterior
 
