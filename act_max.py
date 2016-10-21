@@ -301,12 +301,12 @@ def activation_maximization(net, generator, gen_in_layer, gen_out_layer, start_c
           start=gen_in_layer, end=gen_out_layer, step_size=step_size)
 
       # Clipping code
-      if clip:
-        updated_code = np.clip(updated_code, a_min=-1, a_max=1) # VAE prior is within N(0,1)
+      #if clip:
+      #  updated_code = np.clip(updated_code, a_min=-1, a_max=1) # VAE prior is within N(0,1)
       # Clipping each neuron independently
-      elif upper_bound is not None:
-        updated_code = np.maximum(updated_code, lower_bound) 
-        updated_code = np.minimum(updated_code, upper_bound) 
+      #elif upper_bound is not None:
+      #  updated_code = np.maximum(updated_code, lower_bound) 
+      #  updated_code = np.minimum(updated_code, upper_bound) 
 
       # L2 on code to make the feature vector smaller every iteration
       if o['L2'] > 0 and o['L2'] < 1:
@@ -314,7 +314,7 @@ def activation_maximization(net, generator, gen_in_layer, gen_out_layer, start_c
 
       # TODO store current code
       global curr_code
-      curr_code = updated_code + np.sqrt(2 * step_size) * np.random.normal(0, 1, updated_code.shape)
+      curr_code = updated_code + np.sqrt(2 * step_size) * np.random.normal(0, 1.0 / np.power((1 + i), 0.55), updated_code.shape)
       update_tracking(step_size)
       # updated_code += np.sqrt(2 * step_size) * np.random.normal(0, 1, updated_code.shape)
 
