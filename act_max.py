@@ -32,13 +32,62 @@ if settings.gpu:
   caffe.set_mode_gpu() # uncomment this if gpu processing is available
 
 #TODO
+curr_p = None
+prev_p = None
 prev_posterior = None
 curr_posterior = None
 curr_g = None
 prev_g = None
 curr_code = None
 prev_code = None
-code_hist = []
+count = 0
+
+
+def hamiltonian(posterior, p):
+  ham = -1.0 * np.log(posterior) + 0.5 * np.dot(p[0], p[0])
+  return ham
+
+
+def calc_accpt_ham():
+  return min(1.0, np.exp(-1.0 * hamiltonian(curr_posterior, curr_p) +
+                                hamiltonian(prev_posterior, prev_p)))
+
+
+def leap_frog(net, generator, gen_in_layer, gen_out_layer, unit, image_size,
+              topleft, o, layer, xy, step_size, iteration=1):
+  # print "IN LEAP_FROG!!!!!!"
+  global curr_p
+  global curr_code
+  for i in xrange(iteration):
+      # print "Iteration : " + str(i)
+      best_xx, best_act, grad_norm_generator = generate_posterior(net, generator, gen_in_layer, gen_out_layer,
+                                                                  unit, image_size, topleft, o, layer, xy, curr_code, step_size)
+      curr_p += step_size * curr_g / 2.0
+      curr_code += step_size * curr_p
+      best_xx, best_act, grad_norm_generator = generate_posterior(net, generator, gen_in_layer, gen_out_layer,
+                                                                  unit, image_size, topleft, o, layer, xy, curr_code, step_size)
+      curr_p += step_size * curr_g / 2.0
+  return best_xx, best_act, grad_norm_generator
+
+def update_tracking(net, generator, gen_in_layer, gen_out_layer, unit,
+                    image_size, topleft, o, layer, xy, step_size, iteration=2):
+   best_xx, best_act, grad_norm_generator = leap_frog(net, generator, gen_in_layer,
+                                                      gen_out_layer, unit, image_size,
+                                                      topleft, o, layer, xy, step_size, iteration=iteration)
+   acceptance = calc_accpt_ham()
+   # print "ACCEPTANCE : " + str(acceptance)
+   if(np.random.uniform(0,1) <= acceptance):
+        global count
+        count +=1
+        global prev_code
+        global prev_g
+        global prev_posterior
+        prev_code = curr_code
+        prev_g = curr_g
+        prev_posterior = curr_posterior
+
+   return best_xx, best_act, grad_norm_generator
+
 
 def get_code(path, layer):
   '''
@@ -109,7 +158,7 @@ def make_step_generator(net, x, x0, start, end, step_size=1):
   # TODO
   global curr_g
   global prev_g
-  curr_g = g
+  curr_g = step_size/np.abs(g).mean() * g
   if prev_g is None:
       prev_g = curr_g
 
@@ -166,7 +215,7 @@ def make_step_net(net, end, unit, image, xy=0, step_size=1):
     best_unit = fc.argmax()
     obj_act = fc[unit]
 
-  print "max: %4s [%.2f]\t obj: %4s [%.2f]\t norm: [%.2f]" % (best_unit, fc[best_unit], unit, obj_act, grad_norm)
+  # print "max: %4s [%.2f]\t obj: %4s [%.2f]\t norm: [%.2f]" % (best_unit, fc[best_unit], unit, obj_act, grad_norm)
 
   # TODO store posterior value
   global curr_posterior
@@ -199,30 +248,33 @@ def save_image(img, name):
   scipy.misc.imsave(name, normalized_img)
 
 
-# p(y|x) TODO
-def calc_transition_prob(val, mean, cov):
-    return norm(st.norm.pdf(val, mean, cov))
+def generate_posterior(net, generator, gen_in_layer, gen_out_layer, unit, image_size, topleft, o, layer, xy, code, step_size): 
+  # 1. pass the code to generator to get an image x0
+  generated = generator.forward(feat=code)
+  x0 = generated[gen_out_layer]   # 256x256
 
-def calc_acceptance(step_size):
-    q_curr_given_prev = calc_transition_prob(curr_code, prev_code + prev_g * step_size, step_size)
-    q_prev_given_curr = calc_transition_prob(prev_code, curr_code + curr_g * step_size, step_size)
-    #print "q_curr_given_prev : " + str(q_curr_given_prev)
-    #print "q_prev_given_curr : " + str(q_prev_given_curr)
-    if q_prev_given_curr == 0.0 or q_curr_given_prev == 0.0:
-        return 0.0
-    return min(1.0, (curr_posterior * q_prev_given_curr) / (prev_posterior * q_curr_given_prev))
+  # Crop from 256x256 to 227x227
+  cropped_x0 = x0.copy()[:,:,topleft[0]:topleft[0]+image_size[0], topleft[1]:topleft[1]+image_size[1]]
 
+  # 2. forward pass the image x0 to net to maximize an unit k
+  # 3. backprop the gradient from net to the image to get an updated image x
+  grad_norm_net, x, act = make_step_net(net=net, end=layer, unit=unit, image=cropped_x0, xy=xy, step_size=step_size)
+  
+  # Save the solution
+  # Note that we're not saving the solutions with the highest activations
+  # Because there is no correlation between activation and recognizability
+  best_xx = cropped_x0.copy()
+  best_act = act
 
-def update_tracking(step_size):
-   acceptance = calc_acceptance(step_size)
-   #print "ACCEPTANCE : " + str(acceptance)
-   if(np.random.uniform(0,1) <= acceptance):
-        global prev_code
-        global prev_g
-        global prev_posterior
-        prev_code = curr_code
-        prev_g = curr_g
-        prev_posterior = curr_posterior
+  # 4. Place the changes in x (227x227) back to x0 (256x256)
+  updated_x0 = x0.copy()        
+  updated_x0[:,:,topleft[0]:topleft[0]+image_size[0], topleft[1]:topleft[1]+image_size[1]] = x.copy()
+
+  # 5. backprop the image to generator to get an updated code
+  grad_norm_generator, updated_code = make_step_generator(net=generator, x=updated_x0, x0=x0, 
+      start=gen_in_layer, end=gen_out_layer, step_size=step_size)
+
+  return best_xx, best_act, grad_norm_generator
 
 
 def activation_maximization(net, generator, gen_in_layer, gen_out_layer, start_code, params, 
@@ -250,6 +302,10 @@ def activation_maximization(net, generator, gen_in_layer, gen_out_layer, start_c
 
   # Take the starting code as the input to the generator
   src.data[:] = start_code.copy()[:]
+  global curr_code
+  global prev_code
+  curr_code = src.data[:]
+  prev_code = src.data[:]
 
   # Initialize an empty result
   best_xx = np.zeros(image_size)[np.newaxis]
@@ -265,59 +321,17 @@ def activation_maximization(net, generator, gen_in_layer, gen_out_layer, start_c
 
     for i in xrange(o['iter_n']):
       # TODO store previous code
-      global code_hist
-      global prev_code
-      if prev_code is None:
-          prev_code = src.data[:]
-      code_hist.append(prev_code)
+      global curr_p
+      global prev_p
+      curr_p = np.random.normal(0, 1, curr_code.shape)
+      prev_p = np.copy(curr_p)
 
       step_size = o['start_step_size'] + ((o['end_step_size'] - o['start_step_size']) * i) / o['iter_n']
-      
-      # 1. pass the code to generator to get an image x0
-      generated = generator.forward(feat=src.data[:])
-      x0 = generated[gen_out_layer]   # 256x256
-
-      # Crop from 256x256 to 227x227
-      cropped_x0 = x0.copy()[:,:,topleft[0]:topleft[0]+image_size[0], topleft[1]:topleft[1]+image_size[1]]
-
-      # 2. forward pass the image x0 to net to maximize an unit k
-      # 3. backprop the gradient from net to the image to get an updated image x
-      grad_norm_net, x, act = make_step_net(net=net, end=layer, unit=unit, image=cropped_x0, xy=xy, step_size=step_size)
-      
-      # Save the solution
-      # Note that we're not saving the solutions with the highest activations
-      # Because there is no correlation between activation and recognizability
-      best_xx = cropped_x0.copy()
-      best_act = act
-
-      # 4. Place the changes in x (227x227) back to x0 (256x256)
-      updated_x0 = x0.copy()        
-      updated_x0[:,:,topleft[0]:topleft[0]+image_size[0], topleft[1]:topleft[1]+image_size[1]] = x.copy()
-
-      # 5. backprop the image to generator to get an updated code
-      grad_norm_generator, updated_code = make_step_generator(net=generator, x=updated_x0, x0=x0, 
-          start=gen_in_layer, end=gen_out_layer, step_size=step_size)
-
-      # Clipping code
-      #if clip:
-      #  updated_code = np.clip(updated_code, a_min=-1, a_max=1) # VAE prior is within N(0,1)
-      # Clipping each neuron independently
-      #elif upper_bound is not None:
-      #  updated_code = np.maximum(updated_code, lower_bound) 
-      #  updated_code = np.minimum(updated_code, upper_bound) 
-
-      # L2 on code to make the feature vector smaller every iteration
-      if o['L2'] > 0 and o['L2'] < 1:
-        updated_code[:] *= o['L2']
-
-      # TODO store current code
-      global curr_code
-      curr_code = updated_code + np.sqrt(2 * step_size) * np.random.normal(0, 1.0 / np.power((1 + i), 0.55), updated_code.shape)
-      update_tracking(step_size)
-      # updated_code += np.sqrt(2 * step_size) * np.random.normal(0, 1, updated_code.shape)
+      best_xx, best_act, grad_norm_generator = update_tracking(net, generator, gen_in_layer, gen_out_layer,
+                                                               unit, image_size, topleft, o, layer, xy, step_size)
 
       # Update code
-      src.data[:] = prev_code # updated_code
+      src.data[:] = prev_code 
 
       # Print x every 10 iterations
       if debug:
@@ -330,12 +344,12 @@ def activation_maximization(net, generator, gen_in_layer, gen_out_layer, start_c
         list_acts.append( (name, act) )
 
       # Stop if grad is 0
-      if grad_norm_generator == 0:
-        print " grad_norm_generator is 0"
-        break
-      elif grad_norm_net == 0:
-        print " grad_norm_net is 0"
-        break
+      #if grad_norm_generator == 0:
+      #  print " grad_norm_generator is 0"
+      #  break
+      #elif grad_norm_net == 0:
+      #  print " grad_norm_net is 0"
+      #  break
 
   # returning the resulting image
   print " -------------------------"
@@ -473,11 +487,7 @@ def main():
   if args.debug:
     save_image(output_image, "./debug/%s.jpg" % str(args.n_iters).zfill(3))
 
-  count = 0
-  for i in xrange(len(code_hist) -1):
-      if not np.array_equal(code_hist[i], code_hist[i+1]):
-          count +=1
-  print "# Unique codes : " + str(count) + " %percentage : " + str(count * 1.0 / len(code_hist))
+  print "# Unique codes : " + str(count)
 
 if __name__ == '__main__':
   main()
