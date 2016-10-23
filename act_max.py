@@ -55,27 +55,30 @@ def calc_accpt_ham():
 
 def leap_frog(net, generator, gen_in_layer, gen_out_layer, unit, image_size,
               topleft, o, layer, xy, step_size, iteration=1):
-  # print "IN LEAP_FROG!!!!!!"
   global curr_p
   global curr_code
-  for i in xrange(iteration):
-      # print "Iteration : " + str(i)
+  # initial 1/2 
+  best_xx, best_act, grad_norm_generator = generate_posterior(net, generator, gen_in_layer, gen_out_layer,
+                                                              unit, image_size, topleft, o, layer, xy, curr_code, step_size)
+  curr_p += step_size * curr_g / 2.0
+  curr_code += step_size * curr_p
+  for i in xrange(iteration - 1):
       best_xx, best_act, grad_norm_generator = generate_posterior(net, generator, gen_in_layer, gen_out_layer,
                                                                   unit, image_size, topleft, o, layer, xy, curr_code, step_size)
       curr_p += step_size * curr_g / 2.0
       curr_code += step_size * curr_p
-      best_xx, best_act, grad_norm_generator = generate_posterior(net, generator, gen_in_layer, gen_out_layer,
-                                                                  unit, image_size, topleft, o, layer, xy, curr_code, step_size)
-      curr_p += step_size * curr_g / 2.0
+  # last 1/2      
+  best_xx, best_act, grad_norm_generator = generate_posterior(net, generator, gen_in_layer, gen_out_layer,
+                                                              unit, image_size, topleft, o, layer, xy, curr_code, step_size)
+  curr_p += step_size * curr_g / 2.0
   return best_xx, best_act, grad_norm_generator
 
 def update_tracking(net, generator, gen_in_layer, gen_out_layer, unit,
-                    image_size, topleft, o, layer, xy, step_size, iteration=2):
+                    image_size, topleft, o, layer, xy, step_size, iteration=5):
    best_xx, best_act, grad_norm_generator = leap_frog(net, generator, gen_in_layer,
                                                       gen_out_layer, unit, image_size,
                                                       topleft, o, layer, xy, step_size, iteration=iteration)
    acceptance = calc_accpt_ham()
-   # print "ACCEPTANCE : " + str(acceptance)
    if(np.random.uniform(0,1) <= acceptance):
         global count
         count +=1
@@ -325,7 +328,6 @@ def activation_maximization(net, generator, gen_in_layer, gen_out_layer, start_c
       global prev_p
       curr_p = np.random.normal(0, 1, curr_code.shape)
       prev_p = np.copy(curr_p)
-
       step_size = o['start_step_size'] + ((o['end_step_size'] - o['start_step_size']) * i) / o['iter_n']
       best_xx, best_act, grad_norm_generator = update_tracking(net, generator, gen_in_layer, gen_out_layer,
                                                                unit, image_size, topleft, o, layer, xy, step_size)
