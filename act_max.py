@@ -32,6 +32,12 @@ if settings.gpu:
   caffe.set_mode_gpu() # uncomment this if gpu processing is available
 
 #TODO
+curr_matrix_inv = None
+prev_matrix_inv = None
+curr_matrix_g = None
+prev_matrix_g = None
+curr_matrix_det = None
+prev_matrix_det = None
 curr_p = None
 prev_p = None
 prev_posterior = None
@@ -43,53 +49,95 @@ prev_code = None
 count = 0
 
 
-def hamiltonian(posterior, p):
-  ham = -1.0 * np.log(posterior) + 0.5 * np.dot(p[0], p[0])
+# def create_hessian(g):
+  
+
+
+def hamiltonian(posterior, p, matrix_inv, matrix_det):
+  print "In hamiltonian" #TODO remove
+  det = np.log(matrix_det)
+  dotproduct = np.dot(np.dot(p, matrix_inv), np.transpose(p))
+  print "log matrix_det : " + str(det)
+  print "dotproduct : " + str(dotproduct)
+  ham = 0.5 * (dotproduct + det) - 1.0 * np.log(posterior)
+  print "ham : " + str(ham)
   return ham
 
 
+def calc_dH_dx():
+  print "In calc_dH_dx" #TODO remove
+  matrix_inv_matrix_g = np.dot(curr_matrix_inv, curr_matrix_g)
+  dH_dx = (curr_g - 0.5 * np.trace(matrix_inv_matrix_g) +
+           0.5 * np.dot(np.dot(np.dot(curr_p, matrix_inv_matrix_g), curr_matrix_inv), np.transpose(curr_p)))
+  return dH_dx 
+
+
+def calc_dH_dp(p):
+  print "In calc_dH_dp" #TODO remove
+  return np.transpose(np.dot(curr_matrix_inv, np.transpose(p)))
+
+
 def calc_accpt_ham():
-  return min(1.0, np.exp(-1.0 * hamiltonian(curr_posterior, curr_p) +
-                                hamiltonian(prev_posterior, prev_p)))
+  print "In calc_accpt_ham" #TODO remove
+  return min(1.0, np.exp(-1.0 * hamiltonian(curr_posterior, curr_p, curr_matrix_inv, curr_matrix_det) +
+                                hamiltonian(prev_posterior, prev_p, prev_matrix_inv, prev_matrix_det)))
 
 
 def leap_frog(net, generator, gen_in_layer, gen_out_layer, unit, image_size,
-              topleft, o, layer, xy, step_size, iteration=1):
+              topleft, o, layer, xy, step_size, l_iter=1, f_iter=1):
   global curr_p
   global curr_code
-  # initial 1/2 
-  best_xx, best_act, grad_norm_generator = generate_posterior(net, generator, gen_in_layer, gen_out_layer,
-                                                              unit, image_size, topleft, o, layer, xy, curr_code, step_size)
-  curr_p += step_size * curr_g / 2.0
-  curr_code += step_size * curr_p
-  for i in xrange(iteration - 1):
-      best_xx, best_act, grad_norm_generator = generate_posterior(net, generator, gen_in_layer, gen_out_layer,
-                                                                  unit, image_size, topleft, o, layer, xy, curr_code, step_size)
-      curr_p += step_size * curr_g / 2.0
-      curr_code += step_size * curr_p
-  # last 1/2      
-  best_xx, best_act, grad_norm_generator = generate_posterior(net, generator, gen_in_layer, gen_out_layer,
-                                                              unit, image_size, topleft, o, layer, xy, curr_code, step_size)
-  curr_p += step_size * curr_g / 2.0
+  for i in xrange(l_iter):
+      print "In leap_frog, l_iter : " + str(i) #TODO remove
+      # equation 13
+      for f in xrange(f_iter):
+          dH_dx = calc_dH_dx()
+          curr_p = prev_p - 0.5 * step_size * dH_dx
+      prev_dH_dp = calc_dH_dp(prev_p) 
+      curr_dH_dp = calc_dH_dp(curr_p)
+      # equation 14
+      for f in xrange(f_iter):
+          curr_code = prev_code + 0.5 * step_size * (prev_dH_dp + curr_dH_dp)
+          best_xx, best_act, grad_norm_generator = generate_posterior(net, generator, gen_in_layer, gen_out_layer,
+                                                                      unit, image_size, topleft, o, layer, xy, curr_code, step_size)
+          curr_dH_dp = calc_dH_dp(curr_p)
+      # equation 15         
+      curr_p -= 0.5 * step_size * calc_dH_dx()
   return best_xx, best_act, grad_norm_generator
+
 
 def update_tracking(net, generator, gen_in_layer, gen_out_layer, unit,
                     image_size, topleft, o, layer, xy, step_size, iteration=5):
-   best_xx, best_act, grad_norm_generator = leap_frog(net, generator, gen_in_layer,
-                                                      gen_out_layer, unit, image_size,
-                                                      topleft, o, layer, xy, step_size, iteration=iteration)
-   acceptance = calc_accpt_ham()
-   if(np.random.uniform(0,1) <= acceptance):
-        global count
-        count +=1
-        global prev_code
-        global prev_g
-        global prev_posterior
-        prev_code = curr_code
-        prev_g = curr_g
-        prev_posterior = curr_posterior
+  print "In update_tracking" #TODO remove
+  # initialize p
+  global prev_p
+  global curr_p
+  best_xx, best_act, grad_norm_generator = generate_posterior(net, generator, gen_in_layer, gen_out_layer,
+                                                              unit, image_size, topleft, o, layer, xy, curr_code, step_size)
+  mean = np.array([0] * curr_code.shape[1])
+  curr_p = np.random.multivariate_normal(mean, np.linalg.inv(curr_matrix_inv))
+  prev_p = np.copy(curr_p)
+  best_xx, best_act, grad_norm_generator = leap_frog(net, generator, gen_in_layer,
+                                                     gen_out_layer, unit, image_size,
+                                                     topleft, o, layer, xy, step_size, l_iter=iteration)
+  acceptance = calc_accpt_ham()
+  if(np.random.uniform(0,1) <= acceptance):
+       global count
+       count +=1
+       global prev_code
+       global prev_g
+       global prev_posterior
+       prev_code = curr_code
+       prev_g = curr_g
+       prev_posterior = curr_posterior
+       global prev_matrix_inv
+       global prev_matrix_det
+       global prev_matrix_g
+       prev_matrix_inv = curr_matrix_inv
+       prev_matrix_det = curr_matrix_det
+       prev_matrix_g = curr_matrix_g
 
-   return best_xx, best_act, grad_norm_generator
+  return best_xx, best_act, grad_norm_generator
 
 
 def get_code(path, layer):
@@ -190,9 +238,23 @@ def make_step_net(net, end, unit, image, xy=0, step_size=1):
   
   dst.diff[:] = one_hot
 
+  # TODO test print "fc8" layer
+  # temp_fc8 = np.copy(net.blobs['fc8'].data)
+  # print "make_step_met old fc8 : " + str(net.blobs['fc8'].data)
+  #for i in xrange(len(net.blobs['fc8'].data)):
+  #    net.blobs['fc8'].data[0][i] = np.log(net.blobs['fc8'].data[0][i])
+  # print "make_step_met new fc8 : " + str(net.blobs['fc8'].data)
+  # print "make new fc8 equal old fc8 : " + str(np.array_equal(net.blobs['fc8'].data, temp_fc8))
   # Get back the gradient at the optimization layer
   diffs = net.backward(start=end, diffs=['data'])
   g = diffs['data'][0]
+  print "OLD Gradients : " + str(g)
+  for i in xrange(len(net.blobs['fc8'].data)):
+      net.blobs['fc8'].data[0][i] = np.log(net.blobs['fc8'].data[0][i])
+  new_diffs = net.backward(start=end, diffs=['data'])
+  new_g = diffs['data'][0]
+  print "NEW Gradients : " + str(new_g)
+  print "new gradient equal old gradient : " + str(np.array_equal(new_g, g))
 
   grad_norm = norm(g)
   obj_act = 0
@@ -228,7 +290,7 @@ def make_step_net(net, end, unit, image, xy=0, step_size=1):
       prev_posterior = curr_posterior
 
   # Make an update
-  src.data[:] += step_size/np.abs(g).mean() * g 
+  src.data[:] += step_size/np.abs(g).mean() * g
 
   return (grad_norm, src.data[:].copy(), obj_act)
 
@@ -277,6 +339,22 @@ def generate_posterior(net, generator, gen_in_layer, gen_out_layer, unit, image_
   grad_norm_generator, updated_code = make_step_generator(net=generator, x=updated_x0, x0=x0, 
       start=gen_in_layer, end=gen_out_layer, step_size=step_size)
 
+  global curr_matrix_inv
+  global prev_matrix_inv
+  global curr_matrix_det
+  global prev_matrix_det
+  global curr_matrix_g
+  global prev_matrix_g
+  matrix = np.cov(np.dot(np.transpose(curr_g), curr_g))
+  curr_matrix_g = np.gradient(matrix, axis=0)
+  if prev_matrix_g is None:
+      prev_matrix_g = np.copy(curr_matrix_g)
+  curr_matrix_det = max(1e-300, np.linalg.det(matrix))
+  if prev_matrix_det is None:
+      prev_matrix_det = np.copy(curr_matrix_det)
+  curr_matrix_inv = np.linalg.inv(matrix)
+  if prev_matrix_inv is None:
+      prev_matrix_inv = np.copy(curr_matrix_inv)
   return best_xx, best_act, grad_norm_generator
 
 
@@ -323,11 +401,6 @@ def activation_maximization(net, generator, gen_in_layer, gen_out_layer, start_c
     layer = o['layer']
 
     for i in xrange(o['iter_n']):
-      # TODO store previous code
-      global curr_p
-      global prev_p
-      curr_p = np.random.normal(0, 1, curr_code.shape)
-      prev_p = np.copy(curr_p)
       step_size = o['start_step_size'] + ((o['end_step_size'] - o['start_step_size']) * i) / o['iter_n']
       best_xx, best_act, grad_norm_generator = update_tracking(net, generator, gen_in_layer, gen_out_layer,
                                                                unit, image_size, topleft, o, layer, xy, step_size)

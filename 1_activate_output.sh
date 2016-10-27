@@ -16,7 +16,7 @@ units="643 624 304 629 437" #"${1}"
 xy=0
 
 # Hyperparam settings for visualizing AlexNet
-iters="400"
+iters="200"
 weights="99"
 rates="1.0"
 end_lr=1e-10
